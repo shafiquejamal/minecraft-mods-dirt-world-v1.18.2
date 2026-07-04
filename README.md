@@ -1,13 +1,13 @@
 # Dirt World
 
-`Dirt World` is a Minecraft Forge `1.18.2` mod written in Kotlin. It converts newly generated terrain in the Overworld, Nether, and End into dirt while preserving a small set of blocks and critical structures.
+`Dirt World` is a Minecraft Forge `1.18.2` mod written in Kotlin. It periodically converts terrain around players in the Overworld, Nether, and End into dirt while preserving a small set of blocks and critical structures.
 
 ## Current Behavior
 
-- Newly generated non-air blocks with at least one visible face are converted to dirt.
-- Fully enclosed blocks stay unchanged during initial chunk conversion.
-- Loaded chunks are checked every 100 in-game ticks and converted in small batches to keep the game responsive.
-- Player-placed blocks do not get re-converted after a chunk has already been processed.
+- Every 100 in-game ticks, loaded chunks within 4 chunks of each player are queued for conversion.
+- Full blocks in queued chunks are converted to dirt in small batches to keep the game responsive.
+- Underwater full blocks are converted to dirt without replacing water or lava blocks.
+- Player-placed full blocks in the conversion radius can be converted on later passes.
 - The conversion applies in:
   - Overworld
   - Nether
@@ -19,6 +19,7 @@
 - `minecraft:dirt`
 - `minecraft:gravel`
 - `minecraft:grass`
+- `minecraft:snow`
 - `minecraft:water`
 - `minecraft:lava`
 - `minecraft:end_portal`

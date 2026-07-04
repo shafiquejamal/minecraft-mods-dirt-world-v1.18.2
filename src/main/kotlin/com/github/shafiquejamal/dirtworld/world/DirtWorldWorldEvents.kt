@@ -1,7 +1,6 @@
 package com.github.shafiquejamal.dirtworld.world
 
 import net.minecraft.core.BlockPos
-import net.minecraft.core.Direction
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.tags.BlockTags
 import net.minecraft.world.level.ChunkPos
@@ -16,14 +15,13 @@ import net.minecraft.world.level.levelgen.structure.BoundingBox
 import net.minecraft.world.level.levelgen.structure.StructureStart
 import net.minecraftforge.event.server.ServerStoppedEvent
 import net.minecraftforge.event.TickEvent
-import net.minecraftforge.event.world.ChunkDataEvent
 import net.minecraftforge.event.world.ChunkEvent
 import net.minecraftforge.eventbus.api.SubscribeEvent
 import java.util.concurrent.ConcurrentHashMap
 
 object DirtWorldWorldEvents {
-    private const val PROCESSED_CHUNK_KEY: String = "dirt_world_processed"
     private const val CONVERSION_CHECK_INTERVAL_TICKS: Int = 100
+    private const val PLAYER_CHUNK_RADIUS: Int = 4
     private const val MAX_BLOCKS_SCANNED_PER_TICK: Int = 8192
     private const val MAX_BLOCKS_CHANGED_PER_TICK: Int = 512
 
@@ -68,6 +66,8 @@ object DirtWorldWorldEvents {
         Blocks.TALL_SEAGRASS,
         Blocks.KELP,
         Blocks.KELP_PLANT,
+        Blocks.SNOW,
+        Blocks.POWDER_SNOW,
     )
 
     private val preservedStructures = setOf(
@@ -76,27 +76,9 @@ object DirtWorldWorldEvents {
         StructureFeature.VILLAGE,
     )
 
-    private val processedChunks: MutableSet<ProcessedChunkKey> = ConcurrentHashMap.newKeySet()
     private val loadedChunks: MutableMap<ProcessedChunkKey, LoadedChunk> = ConcurrentHashMap()
     private val conversionTasks: MutableMap<ProcessedChunkKey, ChunkConversionTask> = ConcurrentHashMap()
     private var serverTickCount: Int = 0
-
-    @SubscribeEvent
-    fun onChunkDataLoad(event: ChunkDataEvent.Load) {
-        val level = event.world as? ServerLevel ?: return
-        if (event.data.getBoolean(PROCESSED_CHUNK_KEY)) {
-            processedChunks.add(chunkKey(level, event.chunk.pos))
-        }
-    }
-
-    @SubscribeEvent
-    fun onChunkDataSave(event: ChunkDataEvent.Save) {
-        val level = event.world as? ServerLevel ?: return
-        val key = chunkKey(level, event.chunk.pos)
-        if (processedChunks.contains(key)) {
-            event.data.putBoolean(PROCESSED_CHUNK_KEY, true)
-        }
-    }
 
     @SubscribeEvent
     fun onChunkLoad(event: ChunkEvent.Load) {
@@ -130,7 +112,6 @@ object DirtWorldWorldEvents {
     @SubscribeEvent
     @Suppress("UNUSED_PARAMETER")
     fun onServerStopped(_event: ServerStoppedEvent) {
-        processedChunks.clear()
         loadedChunks.clear()
         conversionTasks.clear()
         serverTickCount = 0
@@ -138,7 +119,7 @@ object DirtWorldWorldEvents {
 
     private fun queueLoadedChunksForConversion() {
         for ((key, loadedChunk) in loadedChunks) {
-            if (processedChunks.contains(key) || conversionTasks.containsKey(key)) {
+            if (conversionTasks.containsKey(key) || !isWithinPlayerConversionRadius(loadedChunk)) {
                 continue
             }
 
@@ -158,7 +139,8 @@ object DirtWorldWorldEvents {
 
         while (iterator.hasNext() && scannedBlocks < MAX_BLOCKS_SCANNED_PER_TICK && changedBlocks < MAX_BLOCKS_CHANGED_PER_TICK) {
             val (key, task) = iterator.next()
-            if (!loadedChunks.containsKey(key)) {
+            val loadedChunk = loadedChunks[key]
+            if (loadedChunk == null || !isWithinPlayerConversionRadius(loadedChunk)) {
                 conversionTasks.remove(key, task)
                 continue
             }
@@ -171,13 +153,27 @@ object DirtWorldWorldEvents {
             changedBlocks += result.changedBlocks
 
             if (result.isComplete) {
-                processedChunks.add(key)
                 task.chunk.setUnsaved(true)
                 conversionTasks.remove(key, task)
             } else if (result.changedBlocks > 0) {
                 task.chunk.setUnsaved(true)
             }
         }
+    }
+
+    private fun isWithinPlayerConversionRadius(loadedChunk: LoadedChunk): Boolean {
+        val chunkX = loadedChunk.chunk.pos.x
+        val chunkZ = loadedChunk.chunk.pos.z
+        for (player in loadedChunk.level.players()) {
+            val playerChunk = player.chunkPosition()
+            if (kotlin.math.abs(playerChunk.x - chunkX) <= PLAYER_CHUNK_RADIUS &&
+                kotlin.math.abs(playerChunk.z - chunkZ) <= PLAYER_CHUNK_RADIUS
+            ) {
+                return true
+            }
+        }
+
+        return false
     }
 
     private fun shouldPreserveBlock(
@@ -190,6 +186,11 @@ object DirtWorldWorldEvents {
         z: Int,
     ): Boolean {
         if (state.isAir) {
+            return true
+        }
+
+        val pos = BlockPos(x, y, z)
+        if (state.isCollisionShapeFullBlock(level, pos).not() || !state.fluidState.isEmpty) {
             return true
         }
 
@@ -214,38 +215,6 @@ object DirtWorldWorldEvents {
             state.`is`(BlockTags.SAPLINGS) ||
             state.`is`(BlockTags.FLOWER_POTS) ||
             state.`is`(BlockTags.REPLACEABLE_PLANTS)
-
-    private fun hasVisibleFace(
-        level: ServerLevel,
-        chunk: ChunkAccess,
-        pos: BlockPos,
-        neighborPos: BlockPos.MutableBlockPos,
-    ): Boolean {
-        for (direction in Direction.values()) {
-            neighborPos.set(pos.x + direction.stepX, pos.y + direction.stepY, pos.z + direction.stepZ)
-            if (neighborPos.y < level.minBuildHeight || neighborPos.y >= level.maxBuildHeight) {
-                return true
-            }
-
-            val neighborState = if (isInsideChunk(chunk, neighborPos)) {
-                chunk.getBlockState(neighborPos)
-            } else if (level.isLoaded(neighborPos)) {
-                level.getBlockState(neighborPos)
-            } else {
-                continue
-            }
-
-            if (neighborState.isAir) {
-                return true
-            }
-        }
-
-        return false
-    }
-
-    private fun isInsideChunk(chunk: ChunkAccess, pos: BlockPos): Boolean =
-        pos.x in chunk.pos.minBlockX..(chunk.pos.minBlockX + 15) &&
-            pos.z in chunk.pos.minBlockZ..(chunk.pos.minBlockZ + 15)
 
     private fun collectProtectedStructureBoxes(level: ServerLevel, chunk: ChunkAccess): Set<BoundingBox> {
         val protectedBoxes = linkedSetOf<BoundingBox>()
@@ -320,7 +289,6 @@ object DirtWorldWorldEvents {
     ) {
         private val dirtState = Blocks.DIRT.defaultBlockState()
         private val mutablePos = BlockPos.MutableBlockPos()
-        private val neighborPos = BlockPos.MutableBlockPos()
         private var sectionIndex: Int = 0
         private var blockIndex: Int = 0
 
@@ -354,10 +322,6 @@ object DirtWorldWorldEvents {
                     }
 
                     mutablePos.set(minX + localX, worldY, worldZ)
-                    if (!hasVisibleFace(level, chunk, mutablePos, neighborPos)) {
-                        continue
-                    }
-
                     if (state.hasBlockEntity()) {
                         chunk.removeBlockEntity(mutablePos)
                     }
