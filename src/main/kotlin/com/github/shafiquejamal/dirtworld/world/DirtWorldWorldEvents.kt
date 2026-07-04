@@ -23,7 +23,9 @@ import java.util.concurrent.ConcurrentHashMap
 
 object DirtWorldWorldEvents {
     private const val PROCESSED_CHUNK_KEY: String = "dirt_world_processed"
-    private const val MAX_CHUNKS_CONVERTED_PER_TICK: Int = 1
+    private const val CONVERSION_CHECK_INTERVAL_TICKS: Int = 100
+    private const val MAX_BLOCKS_SCANNED_PER_TICK: Int = 8192
+    private const val MAX_BLOCKS_CHANGED_PER_TICK: Int = 512
 
     private val preservedBlocks = setOf(
         Blocks.BEDROCK,
@@ -75,7 +77,9 @@ object DirtWorldWorldEvents {
     )
 
     private val processedChunks: MutableSet<ProcessedChunkKey> = ConcurrentHashMap.newKeySet()
-    private val pendingChunks: MutableMap<ProcessedChunkKey, PendingChunk> = ConcurrentHashMap()
+    private val loadedChunks: MutableMap<ProcessedChunkKey, LoadedChunk> = ConcurrentHashMap()
+    private val conversionTasks: MutableMap<ProcessedChunkKey, ChunkConversionTask> = ConcurrentHashMap()
+    private var serverTickCount: Int = 0
 
     @SubscribeEvent
     fun onChunkDataLoad(event: ChunkDataEvent.Load) {
@@ -98,85 +102,80 @@ object DirtWorldWorldEvents {
     fun onChunkLoad(event: ChunkEvent.Load) {
         val level = event.world as? ServerLevel ?: return
         val key = chunkKey(level, event.chunk.pos)
-        if (processedChunks.contains(key)) {
-            return
-        }
-
-        pendingChunks.putIfAbsent(key, PendingChunk(level, event.chunk))
+        loadedChunks[key] = LoadedChunk(level, event.chunk)
     }
 
     @SubscribeEvent
     fun onChunkUnload(event: ChunkEvent.Unload) {
         val level = event.world as? ServerLevel ?: return
-        pendingChunks.remove(chunkKey(level, event.chunk.pos))
+        val key = chunkKey(level, event.chunk.pos)
+        loadedChunks.remove(key)
+        conversionTasks.remove(key)
     }
 
     @SubscribeEvent
     fun onServerTick(event: TickEvent.ServerTickEvent) {
-        if (event.phase != TickEvent.Phase.END || !event.haveTime()) {
+        if (event.phase != TickEvent.Phase.END) {
             return
         }
 
-        var convertedChunks = 0
-        val iterator = pendingChunks.entries.iterator()
-        while (iterator.hasNext() && convertedChunks < MAX_CHUNKS_CONVERTED_PER_TICK) {
-            val (key, pendingChunk) = iterator.next()
-            pendingChunks.remove(key, pendingChunk)
-
-            if (processedChunks.contains(key)) {
-                continue
-            }
-
-            convertChunk(pendingChunk.level, pendingChunk.chunk)
-            processedChunks.add(key)
-            pendingChunk.chunk.setUnsaved(true)
-            convertedChunks++
+        serverTickCount++
+        if (serverTickCount % CONVERSION_CHECK_INTERVAL_TICKS == 0) {
+            queueLoadedChunksForConversion()
         }
+
+        processConversionTasks()
     }
 
     @SubscribeEvent
     @Suppress("UNUSED_PARAMETER")
     fun onServerStopped(_event: ServerStoppedEvent) {
         processedChunks.clear()
-        pendingChunks.clear()
+        loadedChunks.clear()
+        conversionTasks.clear()
+        serverTickCount = 0
     }
 
-    private fun convertChunk(level: ServerLevel, chunk: ChunkAccess) {
-        val dirtState = Blocks.DIRT.defaultBlockState()
-        val protectedStructureBoxes = collectProtectedStructureBoxes(level, chunk)
-        val protectedSpikes = if (level.dimension() == Level.END) SpikeFeature.getSpikesForLevel(level) else emptyList()
-        val mutablePos = BlockPos.MutableBlockPos()
-        val neighborPos = BlockPos.MutableBlockPos()
-        val minX = chunk.pos.minBlockX
-        val minZ = chunk.pos.minBlockZ
-
-        for (section in chunk.sections) {
-            if (section.hasOnlyAir()) {
+    private fun queueLoadedChunksForConversion() {
+        for ((key, loadedChunk) in loadedChunks) {
+            if (processedChunks.contains(key) || conversionTasks.containsKey(key)) {
                 continue
             }
 
-            val minY = section.bottomBlockY()
-            for (localY in 0 until 16) {
-                val worldY = minY + localY
-                for (localZ in 0 until 16) {
-                    val worldZ = minZ + localZ
-                    for (localX in 0 until 16) {
-                        val state = section.getBlockState(localX, localY, localZ)
-                        if (shouldPreserveBlock(level, state, protectedStructureBoxes, protectedSpikes, minX + localX, worldY, worldZ)) {
-                            continue
-                        }
+            conversionTasks[key] = ChunkConversionTask(
+                loadedChunk.level,
+                loadedChunk.chunk,
+                collectProtectedStructureBoxes(loadedChunk.level, loadedChunk.chunk),
+                if (loadedChunk.level.dimension() == Level.END) SpikeFeature.getSpikesForLevel(loadedChunk.level) else emptyList(),
+            )
+        }
+    }
 
-                        mutablePos.set(minX + localX, worldY, worldZ)
-                        if (!hasVisibleFace(level, chunk, mutablePos, neighborPos)) {
-                            continue
-                        }
+    private fun processConversionTasks() {
+        var scannedBlocks = 0
+        var changedBlocks = 0
+        val iterator = conversionTasks.entries.iterator()
 
-                        if (state.hasBlockEntity()) {
-                            chunk.removeBlockEntity(mutablePos)
-                        }
-                        chunk.setBlockState(mutablePos, dirtState, false)
-                    }
-                }
+        while (iterator.hasNext() && scannedBlocks < MAX_BLOCKS_SCANNED_PER_TICK && changedBlocks < MAX_BLOCKS_CHANGED_PER_TICK) {
+            val (key, task) = iterator.next()
+            if (!loadedChunks.containsKey(key)) {
+                conversionTasks.remove(key, task)
+                continue
+            }
+
+            val result = task.process(
+                MAX_BLOCKS_SCANNED_PER_TICK - scannedBlocks,
+                MAX_BLOCKS_CHANGED_PER_TICK - changedBlocks,
+            )
+            scannedBlocks += result.scannedBlocks
+            changedBlocks += result.changedBlocks
+
+            if (result.isComplete) {
+                processedChunks.add(key)
+                task.chunk.setUnsaved(true)
+                conversionTasks.remove(key, task)
+            } else if (result.changedBlocks > 0) {
+                task.chunk.setUnsaved(true)
             }
         }
     }
@@ -308,8 +307,81 @@ object DirtWorldWorldEvents {
         val chunkPos: Long,
     )
 
-    private data class PendingChunk(
+    private data class LoadedChunk(
         val level: ServerLevel,
         val chunk: ChunkAccess,
+    )
+
+    private class ChunkConversionTask(
+        private val level: ServerLevel,
+        val chunk: ChunkAccess,
+        private val protectedStructureBoxes: Collection<BoundingBox>,
+        private val protectedSpikes: List<SpikeFeature.EndSpike>,
+    ) {
+        private val dirtState = Blocks.DIRT.defaultBlockState()
+        private val mutablePos = BlockPos.MutableBlockPos()
+        private val neighborPos = BlockPos.MutableBlockPos()
+        private var sectionIndex: Int = 0
+        private var blockIndex: Int = 0
+
+        fun process(scanLimit: Int, changeLimit: Int): ConversionResult {
+            var scannedBlocks = 0
+            var changedBlocks = 0
+            val minX = chunk.pos.minBlockX
+            val minZ = chunk.pos.minBlockZ
+
+            while (sectionIndex < chunk.sections.size && scannedBlocks < scanLimit && changedBlocks < changeLimit) {
+                val section = chunk.sections[sectionIndex]
+                if (section.hasOnlyAir()) {
+                    sectionIndex++
+                    blockIndex = 0
+                    continue
+                }
+
+                val minY = section.bottomBlockY()
+                while (blockIndex < BLOCKS_PER_SECTION && scannedBlocks < scanLimit && changedBlocks < changeLimit) {
+                    val localX = blockIndex and 15
+                    val localZ = (blockIndex shr 4) and 15
+                    val localY = blockIndex shr 8
+                    val worldY = minY + localY
+                    val worldZ = minZ + localZ
+                    blockIndex++
+                    scannedBlocks++
+
+                    val state = section.getBlockState(localX, localY, localZ)
+                    if (shouldPreserveBlock(level, state, protectedStructureBoxes, protectedSpikes, minX + localX, worldY, worldZ)) {
+                        continue
+                    }
+
+                    mutablePos.set(minX + localX, worldY, worldZ)
+                    if (!hasVisibleFace(level, chunk, mutablePos, neighborPos)) {
+                        continue
+                    }
+
+                    if (state.hasBlockEntity()) {
+                        chunk.removeBlockEntity(mutablePos)
+                    }
+                    chunk.setBlockState(mutablePos, dirtState, false)
+                    changedBlocks++
+                }
+
+                if (blockIndex >= BLOCKS_PER_SECTION) {
+                    sectionIndex++
+                    blockIndex = 0
+                }
+            }
+
+            return ConversionResult(scannedBlocks, changedBlocks, sectionIndex >= chunk.sections.size)
+        }
+
+        private companion object {
+            private const val BLOCKS_PER_SECTION: Int = 16 * 16 * 16
+        }
+    }
+
+    private data class ConversionResult(
+        val scannedBlocks: Int,
+        val changedBlocks: Int,
+        val isComplete: Boolean,
     )
 }

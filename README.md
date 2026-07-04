@@ -6,6 +6,7 @@
 
 - Newly generated non-air blocks with at least one visible face are converted to dirt.
 - Fully enclosed blocks stay unchanged during initial chunk conversion.
+- Loaded chunks are checked every 100 in-game ticks and converted in small batches to keep the game responsive.
 - Player-placed blocks do not get re-converted after a chunk has already been processed.
 - The conversion applies in:
   - Overworld
@@ -86,7 +87,7 @@ Run the dev server:
 
 ## Notes
 
-- First world generation is much slower than vanilla because generated chunks are rewritten block-by-block.
+- First world generation is slower than vanilla because generated chunks are rewritten block-by-block over multiple ticks.
 - The current built jar is produced under `build/libs/`.
 - Mod ID: `dirt_world`
 - Package: `com.github.shafiquejamal.dirtworld`
