@@ -1,6 +1,7 @@
 package com.github.shafiquejamal.dirtworld.world
 
 import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.Level
@@ -78,6 +79,7 @@ object DirtWorldWorldEvents {
         val protectedStructureBoxes = collectProtectedStructureBoxes(level, chunk)
         val protectedSpikes = if (level.dimension() == Level.END) SpikeFeature.getSpikesForLevel(level) else emptyList()
         val mutablePos = BlockPos.MutableBlockPos()
+        val neighborPos = BlockPos.MutableBlockPos()
         val minX = chunk.pos.minBlockX
         val minZ = chunk.pos.minBlockZ
 
@@ -98,6 +100,10 @@ object DirtWorldWorldEvents {
                         }
 
                         mutablePos.set(minX + localX, worldY, worldZ)
+                        if (!hasVisibleFace(level, chunk, mutablePos, neighborPos)) {
+                            continue
+                        }
+
                         if (state.hasBlockEntity()) {
                             chunk.removeBlockEntity(mutablePos)
                         }
@@ -131,6 +137,38 @@ object DirtWorldWorldEvents {
 
         return level.dimension() == Level.END && isInsideProtectedEndSpike(protectedSpikes, x, y, z)
     }
+
+    private fun hasVisibleFace(
+        level: ServerLevel,
+        chunk: ChunkAccess,
+        pos: BlockPos,
+        neighborPos: BlockPos.MutableBlockPos,
+    ): Boolean {
+        for (direction in Direction.values()) {
+            neighborPos.set(pos.x + direction.stepX, pos.y + direction.stepY, pos.z + direction.stepZ)
+            if (neighborPos.y < level.minBuildHeight || neighborPos.y >= level.maxBuildHeight) {
+                return true
+            }
+
+            val neighborState = if (isInsideChunk(chunk, neighborPos)) {
+                chunk.getBlockState(neighborPos)
+            } else if (level.isLoaded(neighborPos)) {
+                level.getBlockState(neighborPos)
+            } else {
+                continue
+            }
+
+            if (neighborState.isAir) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private fun isInsideChunk(chunk: ChunkAccess, pos: BlockPos): Boolean =
+        pos.x in chunk.pos.minBlockX..(chunk.pos.minBlockX + 15) &&
+            pos.z in chunk.pos.minBlockZ..(chunk.pos.minBlockZ + 15)
 
     private fun collectProtectedStructureBoxes(level: ServerLevel, chunk: ChunkAccess): Set<BoundingBox> {
         val protectedBoxes = linkedSetOf<BoundingBox>()

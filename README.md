@@ -4,7 +4,8 @@
 
 ## Current Behavior
 
-- Newly generated non-air blocks are converted to dirt.
+- Newly generated non-air blocks with at least one visible face are converted to dirt.
+- Fully enclosed blocks stay unchanged during initial chunk conversion.
 - Player-placed blocks do not get re-converted after a chunk has already been processed.
 - The conversion applies in:
   - Overworld
