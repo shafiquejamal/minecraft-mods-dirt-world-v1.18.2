@@ -14,6 +14,7 @@ import net.minecraft.world.level.levelgen.feature.StructureFeature
 import net.minecraft.world.level.levelgen.structure.BoundingBox
 import net.minecraft.world.level.levelgen.structure.StructureStart
 import net.minecraftforge.event.server.ServerStoppedEvent
+import net.minecraftforge.event.TickEvent
 import net.minecraftforge.event.world.ChunkDataEvent
 import net.minecraftforge.event.world.ChunkEvent
 import net.minecraftforge.eventbus.api.SubscribeEvent
@@ -21,6 +22,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 object DirtWorldWorldEvents {
     private const val PROCESSED_CHUNK_KEY: String = "dirt_world_processed"
+    private const val MAX_CHUNKS_CONVERTED_PER_TICK: Int = 1
 
     private val preservedBlocks = setOf(
         Blocks.BEDROCK,
@@ -38,6 +40,7 @@ object DirtWorldWorldEvents {
     )
 
     private val processedChunks: MutableSet<ProcessedChunkKey> = ConcurrentHashMap.newKeySet()
+    private val pendingChunks: MutableMap<ProcessedChunkKey, PendingChunk> = ConcurrentHashMap()
 
     @SubscribeEvent
     fun onChunkDataLoad(event: ChunkDataEvent.Load) {
@@ -64,14 +67,43 @@ object DirtWorldWorldEvents {
             return
         }
 
-        convertChunk(level, event.chunk)
-        processedChunks.add(key)
-        event.chunk.setUnsaved(true)
+        pendingChunks.putIfAbsent(key, PendingChunk(level, event.chunk))
     }
 
     @SubscribeEvent
-    fun onServerStopped(event: ServerStoppedEvent) {
+    fun onChunkUnload(event: ChunkEvent.Unload) {
+        val level = event.world as? ServerLevel ?: return
+        pendingChunks.remove(chunkKey(level, event.chunk.pos))
+    }
+
+    @SubscribeEvent
+    fun onServerTick(event: TickEvent.ServerTickEvent) {
+        if (event.phase != TickEvent.Phase.END || !event.haveTime()) {
+            return
+        }
+
+        var convertedChunks = 0
+        val iterator = pendingChunks.entries.iterator()
+        while (iterator.hasNext() && convertedChunks < MAX_CHUNKS_CONVERTED_PER_TICK) {
+            val (key, pendingChunk) = iterator.next()
+            pendingChunks.remove(key, pendingChunk)
+
+            if (processedChunks.contains(key)) {
+                continue
+            }
+
+            convertChunk(pendingChunk.level, pendingChunk.chunk)
+            processedChunks.add(key)
+            pendingChunk.chunk.setUnsaved(true)
+            convertedChunks++
+        }
+    }
+
+    @SubscribeEvent
+    @Suppress("UNUSED_PARAMETER")
+    fun onServerStopped(_event: ServerStoppedEvent) {
         processedChunks.clear()
+        pendingChunks.clear()
     }
 
     private fun convertChunk(level: ServerLevel, chunk: ChunkAccess) {
@@ -228,5 +260,10 @@ object DirtWorldWorldEvents {
     private data class ProcessedChunkKey(
         val dimensionId: String,
         val chunkPos: Long,
+    )
+
+    private data class PendingChunk(
+        val level: ServerLevel,
+        val chunk: ChunkAccess,
     )
 }
