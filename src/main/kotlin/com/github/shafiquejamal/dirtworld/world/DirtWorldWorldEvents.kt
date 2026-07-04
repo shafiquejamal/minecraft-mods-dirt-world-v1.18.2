@@ -3,6 +3,7 @@ package com.github.shafiquejamal.dirtworld.world
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
 import net.minecraft.server.level.ServerLevel
+import net.minecraft.tags.BlockTags
 import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.Blocks
@@ -31,6 +32,40 @@ object DirtWorldWorldEvents {
         Blocks.GRAVEL,
         Blocks.LAVA,
         Blocks.WATER,
+    )
+
+    private val dirtConversionDenyList = setOf(
+        Blocks.GRASS,
+        Blocks.TALL_GRASS,
+        Blocks.FERN,
+        Blocks.LARGE_FERN,
+        Blocks.DEAD_BUSH,
+        Blocks.BAMBOO,
+        Blocks.BAMBOO_SAPLING,
+        Blocks.SWEET_BERRY_BUSH,
+        Blocks.BROWN_MUSHROOM,
+        Blocks.RED_MUSHROOM,
+        Blocks.CRIMSON_FUNGUS,
+        Blocks.WARPED_FUNGUS,
+        Blocks.CRIMSON_ROOTS,
+        Blocks.WARPED_ROOTS,
+        Blocks.NETHER_SPROUTS,
+        Blocks.VINE,
+        Blocks.WEEPING_VINES,
+        Blocks.WEEPING_VINES_PLANT,
+        Blocks.TWISTING_VINES,
+        Blocks.TWISTING_VINES_PLANT,
+        Blocks.CAVE_VINES,
+        Blocks.CAVE_VINES_PLANT,
+        Blocks.HANGING_ROOTS,
+        Blocks.SMALL_DRIPLEAF,
+        Blocks.BIG_DRIPLEAF,
+        Blocks.BIG_DRIPLEAF_STEM,
+        Blocks.LILY_PAD,
+        Blocks.SEAGRASS,
+        Blocks.TALL_SEAGRASS,
+        Blocks.KELP,
+        Blocks.KELP_PLANT,
     )
 
     private val preservedStructures = setOf(
@@ -163,12 +198,23 @@ object DirtWorldWorldEvents {
             return true
         }
 
+        if (isDeniedDirtConversion(state)) {
+            return true
+        }
+
         if (isInsideProtectedStructure(protectedStructureBoxes, x, y, z)) {
             return true
         }
 
         return level.dimension() == Level.END && isInsideProtectedEndSpike(protectedSpikes, x, y, z)
     }
+
+    private fun isDeniedDirtConversion(state: BlockState): Boolean =
+        state.block in dirtConversionDenyList ||
+            state.`is`(BlockTags.FLOWERS) ||
+            state.`is`(BlockTags.SAPLINGS) ||
+            state.`is`(BlockTags.FLOWER_POTS) ||
+            state.`is`(BlockTags.REPLACEABLE_PLANTS)
 
     private fun hasVisibleFace(
         level: ServerLevel,

@@ -17,9 +17,11 @@
 - `minecraft:bedrock`
 - `minecraft:dirt`
 - `minecraft:gravel`
+- `minecraft:grass`
 - `minecraft:water`
 - `minecraft:lava`
 - `minecraft:end_portal`
+- vanilla flowers, saplings, and other small plant/non-full blocks
 
 ## Structures And Special Cases Preserved
 
