@@ -20,10 +20,10 @@ import net.minecraftforge.eventbus.api.SubscribeEvent
 import java.util.concurrent.ConcurrentHashMap
 
 object DirtWorldWorldEvents {
-    private const val CONVERSION_CHECK_INTERVAL_TICKS: Int = 100
+    private const val CONVERSION_CHECK_INTERVAL_TICKS: Int = 20
     private const val PLAYER_CHUNK_RADIUS: Int = 4
-    private const val MAX_BLOCKS_SCANNED_PER_TICK: Int = 8192
-    private const val MAX_BLOCKS_CHANGED_PER_TICK: Int = 512
+    private const val MAX_BLOCKS_SCANNED_PER_TICK: Int = 65536
+    private const val MAX_BLOCKS_CHANGED_PER_TICK: Int = 65536
 
     private val preservedBlocks = setOf(
         Blocks.BEDROCK,
@@ -119,7 +119,7 @@ object DirtWorldWorldEvents {
 
     private fun queueLoadedChunksForConversion() {
         for ((key, loadedChunk) in loadedChunks) {
-            if (conversionTasks.containsKey(key) || !isWithinPlayerConversionRadius(loadedChunk)) {
+            if (!isWithinPlayerConversionRadius(loadedChunk)) {
                 continue
             }
 
