@@ -86,6 +86,19 @@ object DirtWorldWorldEvents {
         val level = event.world as? ServerLevel ?: return
         val key = chunkKey(level, event.chunk.pos)
         loadedChunks[key] = LoadedChunk(level, event.chunk)
+        
+        // Check if this chunk is within range of any player
+        if (isChunkNearAnyPlayer(level, event.chunk.pos)) {
+            // Queue this chunk for immediate conversion
+            if (!conversionTasks.containsKey(key)) {
+                conversionTasks[key] = ChunkConversionTask(
+                    level,
+                    event.chunk,
+                    collectProtectedStructureBoxes(level, event.chunk),
+                    if (level.dimension() == Level.END) SpikeFeature.getSpikesForLevel(level) else emptyList(),
+                )
+            }
+        }
     }
 
     @SubscribeEvent
@@ -141,23 +154,34 @@ object DirtWorldWorldEvents {
         serverTickCount = 0
     }
 
+    private fun isChunkNearAnyPlayer(level: ServerLevel, chunkPos: ChunkPos): Boolean {
+        for (player in level.players()) {
+            val playerChunk = player.chunkPosition()
+            val dx = kotlin.math.abs(playerChunk.x - chunkPos.x)
+            val dz = kotlin.math.abs(playerChunk.z - chunkPos.z)
+            if (dx <= PLAYER_CHUNK_RADIUS && dz <= PLAYER_CHUNK_RADIUS) {
+                return true
+            }
+        }
+        return false
+    }
+
     private fun queueChunksAroundPlayer(level: ServerLevel, playerChunkPos: ChunkPos) {
         for (dx in -PLAYER_CHUNK_RADIUS..PLAYER_CHUNK_RADIUS) {
             for (dz in -PLAYER_CHUNK_RADIUS..PLAYER_CHUNK_RADIUS) {
                 val chunkX = playerChunkPos.x + dx
                 val chunkZ = playerChunkPos.z + dz
                 val chunkPos = ChunkPos(chunkX, chunkZ)
-                
-                // Get or load the chunk
-                val chunk = level.getChunk(chunkX, chunkZ)
                 val key = chunkKey(level, chunkPos)
                 
-                // Queue for conversion if not already processing
-                if (!conversionTasks.containsKey(key)) {
+                // Check if chunk is loaded
+                val loadedChunk = loadedChunks[key]
+                if (loadedChunk != null) {
+                    // Always re-queue to ensure conversion happens
                     conversionTasks[key] = ChunkConversionTask(
                         level,
-                        chunk,
-                        collectProtectedStructureBoxes(level, chunk),
+                        loadedChunk.chunk,
+                        collectProtectedStructureBoxes(level, loadedChunk.chunk),
                         if (level.dimension() == Level.END) SpikeFeature.getSpikesForLevel(level) else emptyList(),
                     )
                 }
