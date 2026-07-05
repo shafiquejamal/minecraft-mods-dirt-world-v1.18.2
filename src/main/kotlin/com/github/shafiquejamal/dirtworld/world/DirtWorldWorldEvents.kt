@@ -20,8 +20,6 @@ import net.minecraftforge.eventbus.api.SubscribeEvent
 import java.util.concurrent.ConcurrentHashMap
 
 object DirtWorldWorldEvents {
-    private const val CONVERSION_CHECK_INTERVAL_TICKS: Int = 20
-    private const val PLAYER_CHUNK_RADIUS: Int = 4
     private const val MAX_BLOCKS_SCANNED_PER_TICK: Int = 65536
     private const val MAX_BLOCKS_CHANGED_PER_TICK: Int = 65536
 
@@ -79,26 +77,12 @@ object DirtWorldWorldEvents {
     private val loadedChunks: MutableMap<ProcessedChunkKey, LoadedChunk> = ConcurrentHashMap()
     private val conversionTasks: MutableMap<ProcessedChunkKey, ChunkConversionTask> = ConcurrentHashMap()
     private val playerLastChunkPos: MutableMap<String, ChunkPos> = ConcurrentHashMap()
-    private var serverTickCount: Int = 0
 
     @SubscribeEvent
     fun onChunkLoad(event: ChunkEvent.Load) {
         val level = event.world as? ServerLevel ?: return
         val key = chunkKey(level, event.chunk.pos)
         loadedChunks[key] = LoadedChunk(level, event.chunk)
-        
-        // Check if this chunk is within range of any player
-        if (isChunkNearAnyPlayer(level, event.chunk.pos)) {
-            // Queue this chunk for immediate conversion
-            if (!conversionTasks.containsKey(key)) {
-                conversionTasks[key] = ChunkConversionTask(
-                    level,
-                    event.chunk,
-                    collectProtectedStructureBoxes(level, event.chunk),
-                    if (level.dimension() == Level.END) SpikeFeature.getSpikesForLevel(level) else emptyList(),
-                )
-            }
-        }
     }
 
     @SubscribeEvent
@@ -113,12 +97,6 @@ object DirtWorldWorldEvents {
     fun onServerTick(event: TickEvent.ServerTickEvent) {
         if (event.phase != TickEvent.Phase.END) {
             return
-        }
-
-        serverTickCount++
-        
-        if (serverTickCount % CONVERSION_CHECK_INTERVAL_TICKS == 0) {
-            queueLoadedChunksForConversion()
         }
 
         processConversionTasks()
@@ -140,7 +118,7 @@ object DirtWorldWorldEvents {
             
             if (lastChunkPos == null || lastChunkPos != currentChunkPos) {
                 playerLastChunkPos[playerId] = currentChunkPos
-                queueChunksAroundPlayer(level, currentChunkPos)
+                queueChunksAroundPlayerCircular(level, currentChunkPos)
             }
         }
     }
@@ -151,56 +129,48 @@ object DirtWorldWorldEvents {
         loadedChunks.clear()
         conversionTasks.clear()
         playerLastChunkPos.clear()
-        serverTickCount = 0
     }
 
-    private fun isChunkNearAnyPlayer(level: ServerLevel, chunkPos: ChunkPos): Boolean {
-        for (player in level.players()) {
-            val playerChunk = player.chunkPosition()
-            val dx = kotlin.math.abs(playerChunk.x - chunkPos.x)
-            val dz = kotlin.math.abs(playerChunk.z - chunkPos.z)
-            if (dx <= PLAYER_CHUNK_RADIUS && dz <= PLAYER_CHUNK_RADIUS) {
-                return true
-            }
-        }
-        return false
-    }
-
-    private fun queueChunksAroundPlayer(level: ServerLevel, playerChunkPos: ChunkPos) {
-        for (dx in -PLAYER_CHUNK_RADIUS..PLAYER_CHUNK_RADIUS) {
-            for (dz in -PLAYER_CHUNK_RADIUS..PLAYER_CHUNK_RADIUS) {
+    private fun queueChunksAroundPlayerCircular(level: ServerLevel, playerChunkPos: ChunkPos) {
+        // Get simulation distance from server settings
+        val simulationDistance = level.server.playerList.simulationDistance
+        
+        // Collect chunks in circular pattern, prioritized by distance
+        val chunksToConvert = mutableListOf<Pair<ChunkPos, Double>>()
+        
+        for (dx in -simulationDistance..simulationDistance) {
+            for (dz in -simulationDistance..simulationDistance) {
                 val chunkX = playerChunkPos.x + dx
                 val chunkZ = playerChunkPos.z + dz
-                val chunkPos = ChunkPos(chunkX, chunkZ)
-                val key = chunkKey(level, chunkPos)
                 
-                // Check if chunk is loaded
-                val loadedChunk = loadedChunks[key]
-                if (loadedChunk != null) {
-                    // Always re-queue to ensure conversion happens
-                    conversionTasks[key] = ChunkConversionTask(
-                        level,
-                        loadedChunk.chunk,
-                        collectProtectedStructureBoxes(level, loadedChunk.chunk),
-                        if (level.dimension() == Level.END) SpikeFeature.getSpikesForLevel(level) else emptyList(),
-                    )
+                // Calculate distance for circular pattern
+                val distance = kotlin.math.sqrt((dx * dx + dz * dz).toDouble())
+                
+                // Only include chunks within circular radius
+                if (distance <= simulationDistance) {
+                    val chunkPos = ChunkPos(chunkX, chunkZ)
+                    chunksToConvert.add(Pair(chunkPos, distance))
                 }
             }
         }
-    }
-
-    private fun queueLoadedChunksForConversion() {
-        for ((key, loadedChunk) in loadedChunks) {
-            if (!isWithinPlayerConversionRadius(loadedChunk)) {
-                continue
+        
+        // Sort by distance (closest first) for priority conversion
+        chunksToConvert.sortBy { it.second }
+        
+        // Queue all chunks in priority order
+        for ((chunkPos, _) in chunksToConvert) {
+            val key = chunkKey(level, chunkPos)
+            val loadedChunk = loadedChunks[key]
+            
+            if (loadedChunk != null) {
+                // Always re-queue to ensure conversion happens
+                conversionTasks[key] = ChunkConversionTask(
+                    level,
+                    loadedChunk.chunk,
+                    collectProtectedStructureBoxes(level, loadedChunk.chunk),
+                    if (level.dimension() == Level.END) SpikeFeature.getSpikesForLevel(level) else emptyList(),
+                )
             }
-
-            conversionTasks[key] = ChunkConversionTask(
-                loadedChunk.level,
-                loadedChunk.chunk,
-                collectProtectedStructureBoxes(loadedChunk.level, loadedChunk.chunk),
-                if (loadedChunk.level.dimension() == Level.END) SpikeFeature.getSpikesForLevel(loadedChunk.level) else emptyList(),
-            )
         }
     }
 
@@ -212,7 +182,7 @@ object DirtWorldWorldEvents {
         while (iterator.hasNext() && scannedBlocks < MAX_BLOCKS_SCANNED_PER_TICK && changedBlocks < MAX_BLOCKS_CHANGED_PER_TICK) {
             val (key, task) = iterator.next()
             val loadedChunk = loadedChunks[key]
-            if (loadedChunk == null || !isWithinPlayerConversionRadius(loadedChunk)) {
+            if (loadedChunk == null) {
                 conversionTasks.remove(key, task)
                 continue
             }
@@ -231,21 +201,6 @@ object DirtWorldWorldEvents {
                 task.chunk.setUnsaved(true)
             }
         }
-    }
-
-    private fun isWithinPlayerConversionRadius(loadedChunk: LoadedChunk): Boolean {
-        val chunkX = loadedChunk.chunk.pos.x
-        val chunkZ = loadedChunk.chunk.pos.z
-        for (player in loadedChunk.level.players()) {
-            val playerChunk = player.chunkPosition()
-            if (kotlin.math.abs(playerChunk.x - chunkX) <= PLAYER_CHUNK_RADIUS &&
-                kotlin.math.abs(playerChunk.z - chunkZ) <= PLAYER_CHUNK_RADIUS
-            ) {
-                return true
-            }
-        }
-
-        return false
     }
 
     private fun shouldPreserveBlock(
