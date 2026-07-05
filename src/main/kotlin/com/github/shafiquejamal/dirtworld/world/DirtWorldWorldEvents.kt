@@ -78,6 +78,7 @@ object DirtWorldWorldEvents {
 
     private val loadedChunks: MutableMap<ProcessedChunkKey, LoadedChunk> = ConcurrentHashMap()
     private val conversionTasks: MutableMap<ProcessedChunkKey, ChunkConversionTask> = ConcurrentHashMap()
+    private val playerLastChunkPos: MutableMap<String, ChunkPos> = ConcurrentHashMap()
     private var serverTickCount: Int = 0
 
     @SubscribeEvent
@@ -102,6 +103,7 @@ object DirtWorldWorldEvents {
         }
 
         serverTickCount++
+        
         if (serverTickCount % CONVERSION_CHECK_INTERVAL_TICKS == 0) {
             queueLoadedChunksForConversion()
         }
@@ -110,11 +112,57 @@ object DirtWorldWorldEvents {
     }
 
     @SubscribeEvent
+    fun onWorldTick(event: TickEvent.WorldTickEvent) {
+        if (event.phase != TickEvent.Phase.END) {
+            return
+        }
+        
+        val level = event.world as? ServerLevel ?: return
+        
+        // Check for player chunk changes and queue conversion instantly
+        for (player in level.players()) {
+            val currentChunkPos = player.chunkPosition()
+            val playerId = player.stringUUID
+            val lastChunkPos = playerLastChunkPos[playerId]
+            
+            if (lastChunkPos == null || lastChunkPos != currentChunkPos) {
+                playerLastChunkPos[playerId] = currentChunkPos
+                queueChunksAroundPlayer(level, currentChunkPos)
+            }
+        }
+    }
+
+    @SubscribeEvent
     @Suppress("UNUSED_PARAMETER")
     fun onServerStopped(_event: ServerStoppedEvent) {
         loadedChunks.clear()
         conversionTasks.clear()
+        playerLastChunkPos.clear()
         serverTickCount = 0
+    }
+
+    private fun queueChunksAroundPlayer(level: ServerLevel, playerChunkPos: ChunkPos) {
+        for (dx in -PLAYER_CHUNK_RADIUS..PLAYER_CHUNK_RADIUS) {
+            for (dz in -PLAYER_CHUNK_RADIUS..PLAYER_CHUNK_RADIUS) {
+                val chunkX = playerChunkPos.x + dx
+                val chunkZ = playerChunkPos.z + dz
+                val chunkPos = ChunkPos(chunkX, chunkZ)
+                
+                // Get or load the chunk
+                val chunk = level.getChunk(chunkX, chunkZ)
+                val key = chunkKey(level, chunkPos)
+                
+                // Queue for conversion if not already processing
+                if (!conversionTasks.containsKey(key)) {
+                    conversionTasks[key] = ChunkConversionTask(
+                        level,
+                        chunk,
+                        collectProtectedStructureBoxes(level, chunk),
+                        if (level.dimension() == Level.END) SpikeFeature.getSpikesForLevel(level) else emptyList(),
+                    )
+                }
+            }
+        }
     }
 
     private fun queueLoadedChunksForConversion() {
