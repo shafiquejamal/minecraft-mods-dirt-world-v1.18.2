@@ -27,8 +27,10 @@ object DirtWorldWorldEvents {
         Blocks.BEDROCK,
         Blocks.DIRT,
         Blocks.END_PORTAL,
+        Blocks.END_PORTAL_FRAME,
         Blocks.GRAVEL,
         Blocks.LAVA,
+        Blocks.OBSIDIAN,
         Blocks.WATER,
     )
 
