@@ -55,6 +55,7 @@
 - Keep resource paths, language keys, and registered IDs aligned with the `dirt_world` namespace.
 - Prefer small, direct Kotlin changes over adding unnecessary abstractions.
 - Keep client-only code under `client/`.
+- After each code change, test the changes, bump the minor or patch version number, then commit the changes and push them to GitHub.
 - When changing world conversion behavior, verify both dedicated server startup and new-world chunk generation behavior. Do not treat a successful build as sufficient validation.
 - Preserve the requested exception rules for villages, pillager outposts, strongholds, the End exit portal, and the main End obsidian pillars unless the user explicitly changes them.
 

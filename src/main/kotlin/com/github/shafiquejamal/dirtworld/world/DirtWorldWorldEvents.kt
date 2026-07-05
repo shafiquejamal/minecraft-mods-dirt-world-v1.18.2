@@ -325,7 +325,7 @@ object DirtWorldWorldEvents {
                     if (state.hasBlockEntity()) {
                         chunk.removeBlockEntity(mutablePos)
                     }
-                    chunk.setBlockState(mutablePos, dirtState, false)
+                    level.setBlock(mutablePos, dirtState, 2)
                     changedBlocks++
                 }
 
